@@ -1,0 +1,28 @@
+{
+  "name": "code-review",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/aiplatform": "^3.21.0",
+    "@google-cloud/vertexai": "^1.2.0",
+    "@octokit/rest": "^20.1.0",
+    "@octokit/webhooks": "^13.2.6",
+    "axios": "^1.6.8",
+    "dotenv": "^16.4.5",
+    "eslint": "^8.57.0",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-promise": "^6.1.1",
+    "eslint-plugin-standard": "^5.0.0",
+    "express": "^4.19.2",
+    "openai": "^4.38.5"
+  }
+}
