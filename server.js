@@ -2,15 +2,17 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { Webhooks } from '@octokit/webhooks';
 import { Octokit } from '@octokit/rest';
-import * as aiplatform from '@google-cloud/aiplatform'; // Correct import for CommonJS module
-import axios from 'axios';
+import cors from 'cors';
+import { PredictionServiceClient } from '@google-cloud/aiplatform';
+import { analyzeCodeDiffs, analyzeComments, analyzeReactions, analyzeCommits, deriveBusinessInsights } from '././helper.js'
 
-dotenv.config(); // Load environment variables from .env file
+dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(cors());
 
 const webhooks = new Webhooks({
 	secret: process.env.WEBHOOK_SECRET,
@@ -18,16 +20,18 @@ const webhooks = new Webhooks({
 
 const octokit = new Octokit({ auth: process.env.GITHUB_ACCESS_TOKEN });
 
-const projectId = process.env.GOOGLE_CLOUD_PROJECT_ID;
-const location = process.env.GOOGLE_CLOUD_LOCATION;
-const endpointId = process.env.VERTEX_AI_ENDPOINT_ID;
-
-const { PredictionServiceClient } = aiplatform.v1; // Access the client from the v1 namespace
-
 const vertexClient = new PredictionServiceClient();
 
+let latestInsights = {
+	codeInsights: {},
+	commentInsights: {},
+	reactionInsights: {},
+	commitInsights: {},
+	businessInsights: {}
+};
+
 app.post('/webhooks', async (req, res) => {
-	console.log('request is', req.body);
+	console.log('Request received:', req.body);
 	const payload = req.body;
 	if (!payload) {
 		return res.status(400).send('No payload received');
@@ -35,68 +39,140 @@ app.post('/webhooks', async (req, res) => {
 
 	try {
 		const { action, pull_request } = payload;
-		if (action === 'opened' || action === 'synchronize' || action === 'reopened') {
-			const { html_url, number, head, base } = pull_request;
+		if (action === 'opened' || action === 'synchronize' || action === 'reopened' || 'submitted') {
+			const { number, head } = pull_request;
 			const owner = head.user.login;
 			const repo = head.repo.name;
 
 			console.log(`Checking PR#${number} for ${owner}/${repo}`);
 
-			// Fetch the list of files changed in the pull request
 			const filesResponse = await octokit.pulls.listFiles({
 				owner,
 				repo,
 				pull_number: number,
 			});
 
-			// Extract filenames from the files changed
-			const filenames = filesResponse.data.map((file) => file.filename);
+			const codeDiffs = filesResponse.data.map((file) => file.patch).join('\n');
+			const insights = analyzeCodeDiffs(codeDiffs);
 
-			// Extract code changes from filenames
-			const codeChanges = filenames.join('\n');
+			const commentsResponse = await octokit.issues.listComments({
+				owner,
+				repo,
+				issue_number: number,
+			});
+			const commentInsights = analyzeComments(commentsResponse.data);
 
-			console.log('code changes are', codeChanges);
+			const reactionsResponse = await octokit.reactions.listForIssue({
+				owner,
+				repo,
+				issue_number: number,
+			});
+			const reactionInsights = analyzeReactions(reactionsResponse.data);
 
-			// Perform code analysis with Vertex AI
-			const request = {
-				endpoint: `projects/${projectId}/locations/${location}/endpoints/${endpointId}`,
-				instances: [
-					{
-						content: codeChanges,
-					},
-				],
-			};
-
-			console.log('request vertex is', request)
-
-			const [response] = await vertexClient.predict(request);
-			console.log('response is', response)
-			const codeAnalysis = response.predictions[0].content.trim();
-
-			console.log('Vertex AI analysis result:', codeAnalysis);
-
-			// Simulate code review results
-			const reviewResults = 'Code looks good!';
-
-			// Add a comment to the pull request with the code analysis
-			await octokit.pulls.createReviewComment({
+			const commitsResponse = await octokit.pulls.listCommits({
 				owner,
 				repo,
 				pull_number: number,
-				commit_id: head.sha,
-				body: `Code analysis results for PR#${number}: \n\n${codeAnalysis}\n\n${reviewResults}`,
 			});
+			const commitInsights = analyzeCommits(commitsResponse.data);
 
-			console.log(`Comment added to PR#${number}`);
+			const businessInsights = deriveBusinessInsights(reactionInsights, commitInsights);
+
+			latestInsights = {
+				codeInsights: insights,
+				commentInsights: commentInsights,
+				reactionInsights: reactionInsights,
+				commitInsights: commitInsights,
+				businessInsights: businessInsights
+			};
+
+			await addInsightsToPullRequest(owner, repo, number, insights, commentInsights, reactionInsights, businessInsights, commitInsights);
+
+			console.log(`Insights added to PR#${number}`);
+			res.status(200).send('OK');
+		} else {
+			res.status(200).send('No action needed');
 		}
-
-		res.status(200).send('OK');
 	} catch (error) {
 		console.error('Error processing webhook:', error.message);
 		res.status(500).send('Error');
 	}
 });
 
+// Function to add insights as comments to the pull request
+export async function addInsightsToPullRequest(owner, repo, number, insights, commentInsights, reactionInsights, businessInsights, commitInsights) {
+	const commentBody = `
+        **Code Analysis Insights for PR#${number}**:
+        - Lines Added: ${insights.linesAdded}
+        - Lines Deleted: ${insights.linesDeleted}
+        - Code Churn: ${insights.codeChurn}
+        - Number of Files Changed: ${insights.numFilesChanged}
+        - Number of Methods Added: ${insights.numMethodsAdded}
+        - Number of Methods Deleted: ${insights.numMethodsDeleted}
+        - Number of Comments Added in Code: ${insights.numCommentsAdded}
+        - Number of Functions Added: ${insights.numFunctionsAdded}
+        - Number of Functions Deleted: ${insights.numFunctionsDeleted}
+        - Number of Variables Added: ${insights.numVariablesAdded}
+        - Number of Variables Deleted: ${insights.numVariablesDeleted}
+        - Number of Classes Added: ${insights.numClassesAdded}
+        - Number of Classes Deleted: ${insights.numClassesDeleted}
+        - Productivity Impact: ${insights.productivityImpact}
+        - Risk Assessment: ${insights.riskAssessment}
+        - Documentation Impact: ${insights.documentationImpact}
+        - Estimated Review Time: ${insights.estimatedReviewTime} minutes
+        - Potential Bug Count: ${insights.potentialBugCount}
+        - Code Complexity Increase: ${insights.codeComplexityIncrease}
+        
+        **Comment Analysis Insights for PR#${number}**:
+        - Total Comments: ${commentInsights.totalComments}
+        - Positive Comments: ${commentInsights.positiveComments}
+        - Negative Comments: ${commentInsights.negativeComments}
+        - Neutral Comments: ${commentInsights.neutralComments}
+        - Comments with Action Items: ${commentInsights.commentsWithActionItems}
+        - Comments with Questions: ${commentInsights.commentsWithQuestions}
+        - Average Comment Length: ${commentInsights.avgCommentLength} characters
+
+        **Reaction Analysis Insights for PR#${number}**:
+        - Total Reactions: ${reactionInsights.totalReactions}
+        - Thumbs Up: ${reactionInsights.thumbsUp}
+        - Thumbs Down: ${reactionInsights.thumbsDown}
+        - Laughs: ${reactionInsights.laughs}
+        - Hoorays: ${reactionInsights.hoorays}
+        - Confused: ${reactionInsights.confused}
+        - Hearts: ${reactionInsights.hearts}
+        - Rockets: ${reactionInsights.rockets}
+        - Eyes: ${reactionInsights.eyes}
+
+        **Commit Analysis Insights for PR#${number}**:
+        - Total Commits: ${commitInsights.totalCommits}
+        - Average Commit Message Length: ${commitInsights.avgCommitMessageLength} characters
+        - Commit Frequency: ${commitInsights.commitFrequency}
+        - Significant Changes: ${commitInsights.significantChanges}
+
+   
+        **Business Insights for PR#${number}**:
+        - Community Engagement: ${businessInsights.communityEngagement}
+        - Overall Sentiment: ${businessInsights.overallSentiment}
+        - Development Efficiency: ${businessInsights.developmentEfficiency}
+        - Significant Changes Impact: ${businessInsights.significantChangesImpact}
+    `;
+
+	await octokit.issues.createComment({
+		owner,
+		repo,
+		issue_number: number,
+		body: commentBody,
+	});
+}
+
+
+app.get('/data', (req, res) => {
+	res.json(latestInsights);
+});
+
+
+
 app.listen(port, () => {
 	console.log(`Server is running on port ${port}`);
 });
+
