@@ -52,103 +52,110 @@ app.post('/webhooks', async (req, res) => {
 
 	try {
 		const { action, pull_request } = payload;
+		if (action === 'opened' || action === 'synchronize' || action === 'reopened') {
 
 
-		if (!pull_request) {
-			console.error('No pull_request found in payload:', payload);
-			return res.status(400).send('No pull_request found in payload');
-		}
+			if (!pull_request) {
+				console.error('No pull_request found in payload:', payload);
+				return res.status(400).send('No pull_request found in payload');
+			}
 
-		const { number, head, title, html_url } = pull_request;
-		const owner = head.user.login;
-		const repo = head.repo.name;
+			const { number, head, title, html_url, diff_url } = pull_request;
+			const owner = head.user.login;
+			const repo = head.repo.name;
 
-		console.log(`Checking PR#${number} for ${owner}/${repo}`);
+			console.log(`Checking PR#${number} for ${owner}/${repo}`);
 
-		const filesResponse = await octokit.pulls.listFiles({
-			owner,
-			repo,
-			pull_number: number,
-		});
+			// const filesResponse = await octokit.pulls.listFiles({
+			// 	owner,
+			// 	repo,
+			// 	pull_number: number,
+			// });
 
-		const codeDiffs = filesResponse.data.map((file) => file.patch).join('\n');
-		// console.log('codeDiffs is', codeDiffs)
-		const insights = analyzeCodeDiffs(codeDiffs);
+			// const codeDiffs = filesResponse.data.map((file) => file.patch).join('\n');
+			// // console.log('codeDiffs is', codeDiffs)
+			// Fetch the code diffs from the diff_url
+			const diffResponse = await axios.get(diff_url);
+			const codeDiffs = diffResponse.data;
 
-		const commentsResponse = await octokit.issues.listComments({
-			owner,
-			repo,
-			issue_number: number,
-		});
+			const insights = analyzeCodeDiffs(codeDiffs);
 
-		const filteredComments = commentsResponse.data.filter(comment => comment.user.login !== botUsername);
-		const commentInsights = analyzeComments(filteredComments);
-
-		const reactionsResponse = await octokit.reactions.listForIssue({
-			owner,
-			repo,
-			issue_number: number,
-		});
-
-		const filteredReactions = reactionsResponse.data.filter(reaction => reaction.user.login !== botUsername);
-
-		const reviewCommentsResponse = await octokit.pulls.listReviewComments({
-			owner,
-			repo,
-			pull_number: number,
-		});
-
-		const reviewComments = reviewCommentsResponse.data.filter(comment => comment.user.login !== botUsername);
-
-		for (const comment of reviewComments) {
-			const commentReactionsResponse = await octokit.reactions.listForPullRequestReviewComment({
+			const commentsResponse = await octokit.issues.listComments({
 				owner,
 				repo,
-				comment_id: comment.id,
+				issue_number: number,
 			});
-			filteredReactions.push(...commentReactionsResponse.data.filter(reaction => reaction.user.login !== botUsername));
+
+			const filteredComments = commentsResponse.data.filter(comment => comment.user.login !== botUsername);
+			const commentInsights = analyzeComments(filteredComments);
+
+			const reactionsResponse = await octokit.reactions.listForIssue({
+				owner,
+				repo,
+				issue_number: number,
+			});
+
+			const filteredReactions = reactionsResponse.data.filter(reaction => reaction.user.login !== botUsername);
+
+			const reviewCommentsResponse = await octokit.pulls.listReviewComments({
+				owner,
+				repo,
+				pull_number: number,
+			});
+
+			const reviewComments = reviewCommentsResponse.data.filter(comment => comment.user.login !== botUsername);
+
+			for (const comment of reviewComments) {
+				const commentReactionsResponse = await octokit.reactions.listForPullRequestReviewComment({
+					owner,
+					repo,
+					comment_id: comment.id,
+				});
+				filteredReactions.push(...commentReactionsResponse.data.filter(reaction => reaction.user.login !== botUsername));
+			}
+
+			const reactionInsights = analyzeReactions(filteredReactions);
+
+			const commitsResponse = await octokit.pulls.listCommits({
+				owner,
+				repo,
+				pull_number: number,
+			});
+			const commitInsights = analyzeCommits(commitsResponse.data);
+
+			const businessInsights = deriveBusinessInsights(reactionInsights, commitInsights);
+
+			const approximateReviewTime = calculateApproximateReviewTime(
+				insights.codeChurn,
+				commentInsights.totalComments,
+				commitInsights.totalCommits
+			);
+
+			latestInsights = {
+				codeInsights: insights,
+				commentInsights: commentInsights,
+				reactionInsights: reactionInsights,
+				commitInsights: commitInsights,
+				businessInsights: businessInsights,
+				approximateReviewTime: approximateReviewTime,
+				prName: title,
+				prLink: html_url
+			};
+
+			// Perform code quality analysis using Vertex AI
+			const codeQualitySuggestions = await performCodeQualityAnalysis(payload, codeDiffs);
+
+			// Add code quality suggestions as comments to the PR
+			await addCodeQualityComments(owner, repo, number, codeQualitySuggestions);
+
+			await addInsightsToPullRequest(owner, repo, number, insights, commentInsights, reactionInsights, businessInsights, commitInsights, approximateReviewTime);
+			await sendSlackNotification(latestInsights);
+
+			console.log(`Insights added to PR#${number}`);
 		}
 
-		const reactionInsights = analyzeReactions(filteredReactions);
-
-		const commitsResponse = await octokit.pulls.listCommits({
-			owner,
-			repo,
-			pull_number: number,
-		});
-		const commitInsights = analyzeCommits(commitsResponse.data);
-
-		const businessInsights = deriveBusinessInsights(reactionInsights, commitInsights);
-
-		const approximateReviewTime = calculateApproximateReviewTime(
-			insights.codeChurn,
-			commentInsights.totalComments,
-			commitInsights.totalCommits
-		);
-
-		latestInsights = {
-			codeInsights: insights,
-			commentInsights: commentInsights,
-			reactionInsights: reactionInsights,
-			commitInsights: commitInsights,
-			businessInsights: businessInsights,
-			approximateReviewTime: approximateReviewTime,
-			prName: title,
-			prLink: html_url
-		};
-
-		// // Perform code quality analysis using Vertex AI
-		// const codeQualitySuggestions = await performCodeQualityAnalysis(payload, codeDiffs);
-
-		// // Add code quality suggestions as comments to the PR
-		// await addCodeQualityComments(owner, repo, number, codeQualitySuggestions);
-
-		await addInsightsToPullRequest(owner, repo, number, insights, commentInsights, reactionInsights, businessInsights, commitInsights, approximateReviewTime);
-		await sendSlackNotification(latestInsights);
-
-		console.log(`Insights added to PR#${number}`);
-
 		res.status(200).send('OK');
+
 	} catch (error) {
 		console.error('Error processing webhook:', error.message, error.stack);
 		res.status(500).send('Error');
@@ -167,8 +174,8 @@ async function addCodeQualityComments(owner, repo, pullNumber, suggestions) {
 			path: suggestion.path,
 			start_line: suggestion.start_line,
 			start_side: suggestion.start_side,
-			line: suggestion.line,
-			side: suggestion.side,
+			line: suggestion.start_line === suggestion.line ? suggestion.start_line + 1 : suggestion.line,
+			// side: suggestion.side,
 			headers: {
 				'X-GitHub-Api-Version': '2022-11-28'
 			}
@@ -179,6 +186,8 @@ async function addCodeQualityComments(owner, repo, pullNumber, suggestions) {
 
 
 async function performCodeQualityAnalysis(eventData, diffText) {
+	console.log('diffText is', diffText)
+	console.log('eventData is', eventData)
 	// Instantiate the models
 	const generativeModel = vertexAI.preview.getGenerativeModel({
 		model: model,
@@ -200,8 +209,9 @@ async function performCodeQualityAnalysis(eventData, diffText) {
     line: <line>,
     side: <side>
     ]}
-    Make sure side is always upper case
-    Make sure you choose the right commit_id from pr_event`
+    Make sure side is always upper case.
+    Make sure you choose the right commit_id from pr_event.
+	Make sure path in the response is the entire file path.`
 				}
 			]
 		},
