@@ -163,6 +163,20 @@ export function calculateCodeComplexityIncrease(numMethodsAdded, numFunctionsAdd
 	return complexityIncrease;
 }
 
+// Function to calculate approximate review time based on code changes
+export function calculateApproximateReviewTime(codeChurn, totalComments, totalCommits) {
+	const averageReviewSpeed = 20; // Lines per minute
+	const averageCommentReviewSpeed = 5; // Comments per minute
+	const averageCommitReviewSpeed = 2; // Commits per minute
+	const baseReviewTime = 15; // Base review time in minutes
+
+	const approximateReviewTime = (codeChurn / averageReviewSpeed) +
+		(totalComments / averageCommentReviewSpeed) +
+		(totalCommits / averageCommitReviewSpeed) +
+		baseReviewTime;
+	return approximateReviewTime;
+}
+
 // Function to analyze comments and derive insights
 export function analyzeComments(comments) {
 	let totalComments = 0;
@@ -219,7 +233,6 @@ function analyzeSentiment(comment) {
 	// Basic sentiment analysis based on keywords
 	const positiveKeywords = ['good', 'great', 'excellent', 'nice', 'well done', 'thanks'];
 	const negativeKeywords = ['bad', 'poor', 'terrible', 'awful', 'needs improvement', 'fix'];
-	console.log('comment is', comment)
 	let sentiment = 'neutral';
 
 	for (const keyword of positiveKeywords) {
@@ -235,8 +248,6 @@ function analyzeSentiment(comment) {
 			break;
 		}
 	}
-
-	console.log('sentiment is', sentiment)
 
 	return sentiment;
 }
@@ -256,9 +267,11 @@ export function analyzeReactions(reactions) {
 	reactions.forEach(reaction => {
 		totalReactions++;
 		switch (reaction.content) {
+			case 'thumbs_up':
 			case '+1':
 				thumbsUp++;
 				break;
+			case 'thumbs_down':
 			case '-1':
 				thumbsDown++;
 				break;
@@ -295,6 +308,7 @@ export function analyzeReactions(reactions) {
 		eyes,
 	};
 }
+
 
 // Function to analyze commits and derive insights
 export function analyzeCommits(commits) {
@@ -362,5 +376,3 @@ export function deriveBusinessInsights(reactionInsights, commitInsights) {
 		significantChangesImpact,
 	};
 }
-
-
